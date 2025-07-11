@@ -52,7 +52,7 @@ async function run() {
         });
       } catch (error) {
         console.error("❌ Failed to add property:", error);
-        res.status(500).json({ message: "Internal Server Error" });
+        res.status(500).json({ message: "Internal Server Error"  });
       }
     });
 

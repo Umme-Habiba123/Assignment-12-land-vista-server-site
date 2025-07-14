@@ -443,7 +443,7 @@ async function run() {
         const result = await wishlistCollection.insertOne({
           userEmail,
           propertyId,
-          addedAt: new Date(),
+          addedAt: new Date()   ,
         });
         res.send(result);
       } catch (error) {

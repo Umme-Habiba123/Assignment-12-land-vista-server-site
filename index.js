@@ -5,11 +5,11 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
+
 // const { getAuth } = require("firebase-admin/auth");
 // const User = require("../models/User"); // MongoDB model
 
-
-// Middleware
+// Middleware------
 app.use(cors());
 app.use(express.json());
 
@@ -29,7 +29,8 @@ async function run() {
     const db = client.db("realStateDB");
     const usersCollection = db.collection("users");
     const addPropertyCollection = db.collection("addProperties");
-    const reviewsCollection = db.collection("reviews");
+    const reviewCollection = db.collection("reviews");
+    const wishlistCollection = db.collection("wishlist");
 
     // 🔐 Token Verification Middleware (optional - if needed)
     app.use((req, res, next) => {
@@ -71,6 +72,17 @@ async function run() {
         });
       } catch (error) {
         console.error("❌ Failed to register user:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // ✅ GET: All users (for ManageUsers)
+    app.get("/users", async (req, res) => {
+      try {
+        const users = await usersCollection.find().toArray();
+        res.send(users);
+      } catch (error) {
+        console.error("❌ Failed to fetch users:", error);
         res.status(500).send({ message: "Internal server error" });
       }
     });
@@ -140,70 +152,77 @@ async function run() {
       res.send(result);
     });
 
+    // GET /users/admins
+    app.get("/users/admins", async (req, res) => {
+      try {
+        const admins = await usersCollection.find({ role: "admin" }).toArray();
+        res.send(admins);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch admins" });
+      }
+    });
+
+    // PATCH /users/role/:id
+    app.patch("/users/role/:id", async (req, res) => {
+      const id = req.params.id;
+      const { role } = req.body;
+
+      const allowedRoles = ["admin", "agent", "fraud"];
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).send({ error: "Invalid role" });
+      }
+
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role: role } }
+      );
+
+      res.send(result);
+    });
+
+    // Make agent----
+    app.patch("/users/make-agent/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role: "agent" } }
+      );
+      res.send(result);
+    });
+
     // PATCH PATCH /users/mark-fraud/:id---------
     app.patch("/users/mark-fraud/:id", async (req, res) => {
       const id = req.params.id;
 
-      // Step 1: ইউজারের ডেটা খুঁজে বের করো
-      const user = await usersCollection.findOne({ _id: new ObjectId(id) });
-
-      if (!user) {
-        return res.status(404).send({ message: "User not found" });
-      }
-
-      // Step 2: role পরিবর্তন করে fraud করো
-      const updateResult = await usersCollection.updateOne(
+      // 1. Mark user as fraud
+      const result = await usersCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: { role: "fraud" } }
       );
 
-      // Step 3: ঐ ইউজারের সব properties ডিলিট করো
-      const deleteResult = await propertiesCollection.deleteMany({
-        agentEmail: user.email,
-      });
+      // 2. Delete all properties added by that agent
+      await addPropertyCollection.deleteMany({ agentId: id });
 
-      res.send({
-        message: "User marked as fraud and properties deleted",
-        updateResult,
-        deleteResult,
-      });
+      res.send(result);
     });
 
     // server/routes/userRoutes.js----
     app.delete("/users/:id", async (req, res) => {
-      const userId = req.params.id;
+      const id = req.params.id;
       const email = req.query.email;
 
-      try {
-        // 1. Delete from Firebase Auth
-        const auth = getAuth();
-        const userRecord = await auth.getUserByEmail(email);
-        await auth.deleteUser(userRecord.uid);
+      // 1. Delete from MongoDB
+      const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
 
-        // 2. Delete from MongoDB
-        await User.findByIdAndDelete(userId);
+      // 2. Optional: delete from Firebase (you can skip if not using Firebase Admin SDK)
+      // await admin.auth().getUserByEmail(email).then(user => {
+      //   return admin.auth().deleteUser(user.uid);
+      // }).catch(error => {
+      //   console.error("Firebase deletion failed:", error);
+      // });
 
-        return res.send({ success: true });
-      } catch (err) {
-        console.error(err);
-        return res.status(500).send({ error: "User deletion failed" });
-      }
+      res.send({ success: true });
     });
-
-    // // server/firebaseAdmin.js
-    // const admin = require("firebase-admin");
-    // const serviceAccount = require("./serviceAccountKey.json");
-
-    // admin.initializeApp({
-    //   credential: admin.credential.cert(serviceAccount),
-    // });
-
-    // module.exports = admin;
-
-
-    
-
-    
 
     // addProperties Secure POST Route---
     app.post("/addProperties", async (req, res) => {
@@ -225,7 +244,7 @@ async function run() {
     });
 
     //  GET: My Properties by agent email
-    app.get("/properties", async (req, res) => {
+    app.get("/addProperties", async (req, res) => {
       const agentEmail = req.query.agentEmail;
 
       if (!agentEmail) {
@@ -240,6 +259,19 @@ async function run() {
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch properties" });
+      }
+    });
+
+    // delete kore dibo pore-----
+    app.get("/properties", async (req, res) => {
+      try {
+        const result = await addPropertyCollection
+          .find() // No filter
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch all properties" });
       }
     });
 
@@ -311,6 +343,129 @@ async function run() {
         res.send(verifiedProperties);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch properties" });
+      }
+    });
+
+    // PATCH: manage property- Verify property
+    app.patch("/properties/verify/:id", async (req, res) => {
+      const id = req.params.id;
+
+      try {
+        const result = await addPropertyCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { verificationStatus: "verified" } }
+        );
+        res.send(result);
+      } catch (err) {
+        console.error("Error verifying property:", err);
+        res.status(500).send({ message: "Failed to verify property" });
+      }
+    });
+
+    // PATCH: manage property Reject property by admin
+    app.patch("/properties/reject/:id", async (req, res) => {
+      const id = req.params.id;
+
+      try {
+        const result = await addPropertyCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { verificationStatus: "rejected" } }
+        );
+
+        res.send(result);
+      } catch (err) {
+        console.error("❌ Error rejecting property:", err);
+        res.status(500).send({ message: "Failed to reject property" });
+      }
+    });
+
+    // post reviews----
+    app.post("/reviews", async (req, res) => {
+      const review = req.body;
+
+      if (!review.propertyId || !review.userEmail || !review.review) {
+        return res
+          .status(400)
+          .send({ message: "Missing required review fields" });
+      }
+
+      try {
+        const result = await reviewCollection.insertOne({
+          ...review,
+          reviewedAt: new Date(),
+        });
+
+        res.send(result);
+      } catch (error) {
+        console.error("❌ Failed to add review:", error);
+        res.status(500).send({ message: "Failed to add review" });
+      }
+    });
+
+    // get reviews----
+    app.get("/reviews", async (req, res) => {
+      const propertyId = req.query.propertyId;
+
+      if (!propertyId) {
+        return res.status(400).send({ message: "Property ID is required" });
+      }
+
+      try {
+        const reviews = await reviewCollection
+          .find({ propertyId })
+          .sort({ reviewedAt: -1 })
+          .toArray();
+        res.send(reviews);
+      } catch (error) {
+        console.error("❌ Failed to load reviews:", error);
+        res.status(500).send({ message: "Failed to load reviews" });
+      }
+    });
+
+    // post wishlist----
+    app.post("/wishlist", async (req, res) => {
+      const { userEmail, propertyId } = req.body;
+
+      if (!userEmail || !propertyId) {
+        return res.status(400).send({ message: "Missing email or propertyId" });
+      }
+
+      // Optional: prevent duplicate wishlist entries
+      const exists = await wishlistCollection.findOne({
+        userEmail,
+        propertyId,
+      });
+      if (exists) {
+        return res.status(409).send({ message: "Already in wishlist" });
+      }
+
+      try {
+        const result = await wishlistCollection.insertOne({
+          userEmail,
+          propertyId,
+          addedAt: new Date(),
+        });
+        res.send(result);
+      } catch (error) {
+        console.error("❌ Error adding to wishlist:", error);
+        res.status(500).send({ message: "Failed to add to wishlist" });
+      }
+    });
+
+    // get wishlist-----
+    app.get("/wishlist", async (req, res) => {
+      const { userEmail } = req.query;
+
+      if (!userEmail) {
+        return res.status(400).send({ message: "Missing userEmail" });
+      }
+
+      try {
+        const result = await wishlistCollection.find({ userEmail }).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("❌ Error getting wishlist:", error);
+        res.status(500).send({ message: "Failed to get wishlist" });
       }
     });
 

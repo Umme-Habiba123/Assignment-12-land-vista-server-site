@@ -345,6 +345,7 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch properties" });
       }
     });
+    0;
 
     // PATCH: manage property- Verify property
     app.patch("/properties/verify/:id", async (req, res) => {
@@ -403,22 +404,17 @@ async function run() {
     });
 
     // get reviews----
-    app.get("/reviews", async (req, res) => {
-      const propertyId = req.query.propertyId;
-
-      if (!propertyId) {
-        return res.status(400).send({ message: "Property ID is required" });
+    app.get("/reviews/user", async (req, res) => {
+      const userEmail = req.query.email;
+      if (!userEmail) {
+        return res.status(400).send({ message: "User email is required" });
       }
-
       try {
-        const reviews = await reviewCollection
-          .find({ propertyId })
-          .sort({ reviewedAt: -1 })
-          .toArray();
+        const reviews = await reviewCollection.find({ userEmail }).toArray();
         res.send(reviews);
       } catch (error) {
-        console.error("❌ Failed to load reviews:", error);
-        res.status(500).send({ message: "Failed to load reviews" });
+        console.error("❌ Failed to load user reviews:", error);
+        res.status(500).send({ message: "Failed to load user reviews" });
       }
     });
 
@@ -426,47 +422,158 @@ async function run() {
     app.post("/wishlist", async (req, res) => {
       const { userEmail, propertyId } = req.body;
 
-      if (!userEmail || !propertyId) {
-        return res.status(400).send({ message: "Missing email or propertyId" });
-      }
-
-      // Optional: prevent duplicate wishlist entries
-      const exists = await wishlistCollection.findOne({
+      const existing = await wishlistCollection.findOne({
         userEmail,
-        propertyId,
+        propertyId: String(propertyId),
       });
-      if (exists) {
-        return res.status(409).send({ message: "Already in wishlist" });
+
+      if (existing) {
+        return res
+          .status(409)
+          .send({ message: "Property already in wishlist" });
       }
 
-      try {
-        const result = await wishlistCollection.insertOne({
-          userEmail,
-          propertyId,
-          addedAt: new Date()   ,
-        });
-        res.send(result);
-      } catch (error) {
-        console.error("❌ Error adding to wishlist:", error);
-        res.status(500).send({ message: "Failed to add to wishlist" });
-      }
+      const result = await wishlistCollection.insertOne({
+        ...req.body,
+        propertyId: String(propertyId),
+        createdAt: new Date(),
+      });
+
+      res.send(result);
     });
 
-    // get wishlist-----
-    app.get("/wishlist", async (req, res) => {
-      const { userEmail } = req.query;
+    // get wishlist by email-----
+    app.get("/wishlist/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await wishlistCollection
+        .find({ userEmail: email })
+        .toArray();
+      res.send(result);
+    });
 
-      if (!userEmail) {
-        return res.status(400).send({ message: "Missing userEmail" });
-      }
+    // Delete Wishlist Item by ID--------
+    app.delete("/wishlist/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await wishlistCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
 
-      try {
-        const result = await wishlistCollection.find({ userEmail }).toArray();
-        res.send(result);
-      } catch (error) {
-        console.error("❌ Error getting wishlist:", error);
-        res.status(500).send({ message: "Failed to get wishlist" });
-      }
+    //  Get All Offers by Logged-in User----
+    app.get("/offers", async (req, res) => {
+      const email = req.query.email;
+      if (!email) return res.status(400).send({ message: "Email required" });
+      const result = await offersCollection
+        .find({ userEmail: email })
+        .toArray();
+      res.send(result);
+    });
+
+    // Get Single Offer by ID (for payment page)
+    app.get("/offers/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await offersCollection.findOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
+    //Update Offer Status to “accepted” (Agent Dashboard থেকে)---
+    app.patch("/offers/accept/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await offersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "accepted" } }
+      );
+      res.send(result);
+    });
+
+    //Complete Payment → Update Status to “bought” and add Transaction ID---
+    app.patch("/offers/payment/:id", async (req, res) => {
+      const id = req.params.id;
+      const { transactionId } = req.body;
+      const result = await offersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "bought", transactionId } }
+      );
+      res.send(result);
+    });
+
+    // get reviews--------
+  app.get("/reviews", async (req, res) => {
+  const { propertyId, email } = req.query;
+
+  if (!propertyId && !email) {
+    return res.status(400).send({ message: "Property ID or email is required" });
+  }
+
+  try {
+    let filter = {};
+    if (propertyId) {
+      filter.propertyId = propertyId;
+    } else if (email) {
+      filter.userEmail = email;
+    }
+
+    const reviews = await reviewCollection
+      .find(filter)
+      .sort({ reviewedAt: -1 })
+      .toArray();
+
+    res.send(reviews);
+  } catch (error) {
+    console.error("❌ Failed to load reviews:", error);
+    res.status(500).send({ message: "Failed to load reviews" });
+  }
+});
+
+    //  Get All Reviews by User-------
+ app.get("/reviews/user", async (req, res) => {
+  const userEmail = req.query.email;
+  if (!userEmail)
+    return res.status(400).send({ message: "User email is required" });
+
+  try {
+    const reviews = await reviewCollection
+      .aggregate([
+        { $match: { userEmail } },
+        {
+          $lookup: {
+            from: "addProperties",  // আপনার প্রপার্টিজ কালেকশনের নাম
+            localField: "propertyId",
+            foreignField: "_id",
+            as: "propertyDetails",
+          },
+        },
+        { $unwind: "$propertyDetails" },
+        {
+          $project: {
+            userEmail: 1,
+            userName: 1,
+            review: 1,
+            reviewedAt: 1,
+            propertyId: 1,
+            propertyTitle: "$propertyDetails.title",
+            agentName: "$propertyDetails.agentName",
+          },
+        },
+      ])
+      .toArray();
+
+    res.send(reviews);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to load user reviews" });
+  }
+});
+
+
+    //  Delete a Review by ID----------
+    app.delete("/reviews/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await reviewCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
     });
 
     // Root Route

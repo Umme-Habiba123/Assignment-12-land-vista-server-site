@@ -5,6 +5,7 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // const { getAuth } = require("firebase-admin/auth");
 // const User = require("../models/User"); // MongoDB model
@@ -13,11 +14,7 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.jbcozto.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.jbcozto.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
-// const uri = "mongodb+srv://<db_username>:<db_password>@cluster0.jbcozto.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
 const client = new MongoClient(uri, {
   serverApi: ServerApiVersion.v1,
@@ -32,6 +29,8 @@ async function run() {
     const reviewCollection = db.collection("reviews");
     const wishlistCollection = db.collection("wishlist");
     const offersCollection = db.collection("offers");
+    const paymentsCollection = db.collection("payments");
+    const soldPropertiesCollection = db.collection("soldProperties");
 
     // 🔐 Token Verification Middleware (optional - if needed)
     app.use((req, res, next) => {
@@ -375,7 +374,89 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch properties" });
       }
     });
-    0;
+
+    // GET sold properties for agent
+    app.get("/sold-properties", async (req, res) => {
+      const agentEmail = req.query.agentEmail;
+
+      if (!agentEmail) {
+        return res
+          .status(400)
+          .json({ error: "agentEmail query parameter is required" });
+      }
+
+      try {
+        const soldProperties = await paymentsCollection
+          .aggregate([
+            // শুধু 'bought' status গুলো নাও
+            { $match: { status: "bought" } },
+
+            // offers collection থেকে offerId দিয়ে ডাটা যোগ করো
+            {
+              $lookup: {
+                from: "offers",
+                localField: "offerId",
+                foreignField: "_id",
+                as: "offerDetails",
+              },
+            },
+            { $unwind: "$offerDetails" },
+
+            // যেখানে offers এর agentEmail == query agentEmail
+            { $match: { "offerDetails.agentEmail": agentEmail.toLowerCase() } },
+
+            // properties collection থেকে propertyId দিয়ে property info যোগ করো
+            {
+              $lookup: {
+                from: "addProperties",
+                localField: "offerDetails.propertyId",
+                foreignField: "_id",
+                as: "propertyDetails",
+              },
+            },
+            { $unwind: "$propertyDetails" },
+
+            // প্রয়োজনীয় ফিল্ড projection
+            {
+              $project: {
+                _id: 1,
+                propertyTitle: "$propertyDetails.title",
+                propertyLocation: "$propertyDetails.location",
+                buyerEmail: "$offerDetails.buyerEmail",
+                buyerName: "$offerDetails.buyerName",
+                soldPrice: "$amount",
+                transactionId: 1,
+                date: 1,
+              },
+            },
+          ])
+          .toArray();
+
+        res.json(soldProperties);
+      } catch (error) {
+        console.error("Error fetching sold properties:", error);
+        res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
+
+    // POST insert sold property (call this after successful payment)
+    app.post("/sold-properties", async (req, res) => {
+      try {
+        const soldPropertyData = req.body;
+        if (!soldPropertyData.propertyTitle || !soldPropertyData.agentEmail) {
+          return res.status(400).json({ error: "Missing required fields" });
+        }
+        const result = await soldPropertiesCollection.insertOne({
+          ...soldPropertyData,
+          createdAt: new Date(),
+          status: "bought",
+        });
+        res.status(201).json({ insertedId: result.insertedId });
+      } catch (error) {
+        console.error("Error inserting sold property:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
 
     // PATCH: manage property- Verify property
     app.patch("/admin/verify-property/:id", async (req, res) => {
@@ -480,22 +561,62 @@ async function run() {
       res.send(result);
     });
 
+    // Get all offers by logged-in buyer
+    app.get("/offers", async (req, res) => {
+      const email = req.query.email?.toLowerCase();
+      if (!email) return res.status(400).send({ message: "Email required" });
+
+      const result = await offersCollection
+        .find({ buyerEmail: email })
+        .toArray();
+
+      res.send(result);
+    });
+
     //  Get Wishlist by User Email (GET)--------
     app.get("/wishlist/:email", async (req, res) => {
       try {
         const email = req.params.email;
-        const result = await wishlistCollection
+        console.log("Fetching wishlist for:", email);
+
+        const wishlistItems = await wishlistCollection
           .find({ userEmail: email })
           .toArray();
-        res.send(result);
+
+        console.log("Wishlist items:", wishlistItems);
+
+        const validPropertyIds = wishlistItems
+          .map((item) => item.propertyId)
+          .filter((id) => ObjectId.isValid(id)) // null/invalid বাদ
+          .map((id) => new ObjectId(id));
+
+        console.log("Valid property IDs:", validPropertyIds);
+
+        const properties = await addPropertyCollection
+          .find({ _id: { $in: validPropertyIds } })
+          .toArray();
+
+        console.log("Fetched properties:", properties);
+
+        const mergedWishlist = wishlistItems.map((item) => {
+          const property = properties.find(
+            (p) => p._id.toString() === item.propertyId
+          );
+
+          return {
+            ...item,
+            ...property,
+          };
+        });
+
+        res.send(mergedWishlist);
       } catch (error) {
-        console.error("Error fetching wishlist:", error.message);
+        console.error("❌ Error fetching wishlist:", error);
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
 
     // Delete Wishlist Item by ID--------
-    // ✅ Remove from Wishlist by ID (DELETE)
     app.delete("/wishlist/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -514,7 +635,7 @@ async function run() {
       }
     });
 
-    // POST: Save offer to DB
+    // Make a new offer -----
     app.post("/offers", async (req, res) => {
       try {
         const {
@@ -523,40 +644,37 @@ async function run() {
           location,
           image,
           agentName,
+          agentEmail,
           offerAmount,
           buyerEmail,
           buyerName,
         } = req.body;
 
-        // ✅ Basic validation
-        if (
-          !propertyId ||
-          !buyerEmail ||
-          !offerAmount ||
-          !title ||
-          !location ||
-          !agentName
-        ) {
-          return res.status(400).send({ message: "Missing required fields" });
+        let finalAgentEmail = agentEmail?.toLowerCase();
+
+        if (!finalAgentEmail) {
+          const property = await addPropertyCollection.findOne({
+            _id: new ObjectId(propertyId),
+          });
+          finalAgentEmail = property?.agentEmail?.toLowerCase() || "";
         }
 
         const newOffer = {
           propertyId: propertyId.toString(),
           title,
           location,
-          image: image || "", // fallback in case image missing
+          image: image || "",
           agentName,
+          agentEmail: finalAgentEmail,
           offerAmount: parseFloat(offerAmount),
-          buyerEmail,
+          buyerEmail: buyerEmail?.toLowerCase(),
           buyerName,
-          buyingDate: new Date(), // accurate buy date
+          buyingDate: new Date(),
           status: "pending",
           createdAt: new Date(),
         };
 
         const result = await offersCollection.insertOne(newOffer);
-        console.log("Inserted offer:", result.insertedId);
-
         res.send({
           insertedId: result.insertedId,
           message: "Offer submitted successfully",
@@ -567,53 +685,32 @@ async function run() {
       }
     });
 
-    //  Get All Offers by Logged-in User----
+    //Get all offers by logged-in BUYER -----
     app.get("/offers", async (req, res) => {
-      const email = req.query.email;
+      const email = req.query.email?.toLowerCase();
       if (!email) return res.status(400).send({ message: "Email required" });
-      const result = await offersCollection
-        .find({ userEmail: email })
-        .toArray();
-      res.send(result);
-    });
 
-    // Get all offers for a specific user
-    app.get("/offers/:email", async (req, res) => {
-      const email = req.params.email;
       const result = await offersCollection
         .find({ buyerEmail: email })
         .toArray();
       res.send(result);
     });
 
-    //  API for getting sold properties
-    app.get("/agent/sold-properties/:email", async (req, res) => {
-      const agentEmail = req.params.email;
-      console.log("agent email", agentEmail);
-      try {
-        const sold = await offersCollection
-          .find({ agentEmail, status: "bought" })
-          .toArray();
-        res.send(sold);
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Server error" });
-      }
-    });
-
-    // API for getting requested properties (offers)
+    // Get offers assigned to logged-in AGENT -----------
     app.get("/agent/requested-offers/:email", async (req, res) => {
-      const agentEmail = req.params.email;
       try {
-        const offers = await offersCollection.find({ agentEmail }).toArray();
+        const agentEmail = req.params.email?.toLowerCase();
+        const offers = await offersCollection
+          .find({ buyerEmail: agentEmail })
+          .toArray();
         res.send(offers);
       } catch (error) {
-        console.error(error);
+        console.error("Error fetching agent offers", error);
         res.status(500).send({ message: "Server error" });
       }
     });
 
-    // ✅ STEP 3: Accept an offer
+    // agent accept offer by id----------
     app.patch("/agent/accept-offer/:id", async (req, res) => {
       const id = req.params.id;
       const offer = await offersCollection.findOne({ _id: new ObjectId(id) });
@@ -642,47 +739,111 @@ async function run() {
       res.send({ message: "Offer accepted and others rejected" });
     });
 
-    // ✅ STEP 4: Reject an offer
+    //Reject only a single offer-------
     app.patch("/agent/reject-offer/:id", async (req, res) => {
-      const id = req.params.id;
       try {
+        const id = req.params.id;
         const result = await offersCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: { status: "rejected" } }
         );
-        res.send(result);
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(404)
+            .send({ message: "Offer not found or already rejected" });
+        }
+
+        res.send({ message: "Offer rejected" });
       } catch (error) {
-        console.error(error);
+        console.error("Error rejecting offer", error);
         res.status(500).send({ message: "Failed to reject offer" });
       }
     });
 
-    // Get Single Offer by ID (for payment page)
+    //Get a single offer by ID (for Payment, Tracking etc.)-------------
     app.get("/offers/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await offersCollection.findOne({ _id: new ObjectId(id) });
-      res.send(result);
+      try {
+        const id = req.params.id;
+        const offer = await offersCollection.findOne({ _id: new ObjectId(id) });
+        if (!offer) return res.status(404).send({ message: "Offer not found" });
+        res.send(offer);
+      } catch (error) {
+        console.error("Error fetching offer", error);
+        res.status(500).send({ message: "Server error" });
+      }
     });
 
-    //Update Offer Status to “accepted” (Agent Dashboard থেকে)---
-    app.patch("/offers/accept/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await offersCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status: "accepted" } }
-      );
-      res.send(result);
+    //Delete all offers with missing agentEmail (Debug purpose only)-------
+    app.delete("/debug/delete-bad-offers", async (req, res) => {
+      const result = await offersCollection.deleteMany({
+        agentEmail: { $in: [null, ""] },
+      });
+      res.send({ deleted: result.deletedCount });
     });
 
-    //Complete Payment → Update Status to “bought” and add Transaction ID---
-    app.patch("/offers/payment/:id", async (req, res) => {
+    app.post("/payments", async (req, res) => {
+      try {
+        const paymentData = req.body;
+
+        // Simple validation
+        if (
+          !paymentData.offerId ||
+          !paymentData.buyerEmail ||
+          !paymentData.amount ||
+          !paymentData.transactionId
+        ) {
+          return res
+            .status(400)
+            .json({ error: "Missing required payment fields." });
+        }
+
+        // Insert payment data into MongoDB
+        const result = await paymentsCollection.insertOne({
+          ...paymentData,
+          createdAt: new Date(),
+        });
+
+        if (result.insertedId) {
+          res.status(201).json({ insertedId: result.insertedId });
+        } else {
+          res.status(500).json({ error: "Failed to save payment." });
+        }
+      } catch (error) {
+        console.error("Error in /payments:", error);
+        res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
+
+    // /payments/mark-paid/:id------------
+    app.patch("/payments/mark-paid/:id", async (req, res) => {
       const id = req.params.id;
       const { transactionId } = req.body;
+
       const result = await offersCollection.updateOne(
         { _id: new ObjectId(id) },
-        { $set: { status: "bought", transactionId } }
+        {
+          $set: {
+            status: "bought",
+            transactionId: transactionId,
+          },
+        }
       );
       res.send(result);
+    });
+
+    //Make sure amount received & validated properly
+    app.post("/create-payment-intent", async (req, res) => {
+      const { amount } = req.body;
+      const amountInCents = Math.round(amount * 100);
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amountInCents,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      res.send({ clientSecret: paymentIntent.client_secret });
     });
 
     // get reviews--------

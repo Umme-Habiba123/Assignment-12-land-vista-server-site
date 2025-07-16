@@ -307,6 +307,18 @@ async function run() {
       }
     });
 
+    app.get("/properties", async (req, res) => {
+      const status = req.query.status;
+      let query = {};
+
+      if (status) {
+        query.verificationStatus = status;
+      }
+
+      const result = await propertiesCollection.find(query).toArray();
+      res.send(result);
+    });
+
     //  PATCH: Update Property (my properties)
     app.patch("/properties/:id", async (req, res) => {
       const id = req.params.id;
@@ -366,36 +378,23 @@ async function run() {
     0;
 
     // PATCH: manage property- Verify property
-    app.patch("/properties/verify/:id", async (req, res) => {
+    app.patch("/admin/verify-property/:id", async (req, res) => {
       const id = req.params.id;
-
-      try {
-        const result = await addPropertyCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { verificationStatus: "verified" } }
-        );
-        res.send(result);
-      } catch (err) {
-        console.error("Error verifying property:", err);
-        res.status(500).send({ message: "Failed to verify property" });
-      }
+      const result = await addPropertyCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { verificationStatus: "verified" } }
+      );
+      res.send(result);
     });
 
     // PATCH: manage property Reject property by admin
-    app.patch("/properties/reject/:id", async (req, res) => {
+    app.patch("/admin/reject-property/:id", async (req, res) => {
       const id = req.params.id;
-
-      try {
-        const result = await addPropertyCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { verificationStatus: "rejected" } }
-        );
-
-        res.send(result);
-      } catch (err) {
-        console.error("❌ Error rejecting property:", err);
-        res.status(500).send({ message: "Failed to reject property" });
-      }
+      const result = await addPropertyCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { verificationStatus: "rejected" } }
+      );
+      res.send(result);
     });
 
     // post reviews----
@@ -516,51 +515,57 @@ async function run() {
     });
 
     // POST: Save offer to DB
- app.post("/offers", async (req, res) => {
-  try {
-    const {
-      propertyId,
-      title,
-      location,
-      image,
-      agentName,
-      offerAmount,
-      buyerEmail,
-      buyerName,
-    } = req.body;
+    app.post("/offers", async (req, res) => {
+      try {
+        const {
+          propertyId,
+          title,
+          location,
+          image,
+          agentName,
+          offerAmount,
+          buyerEmail,
+          buyerName,
+        } = req.body;
 
-    // ✅ Basic validation
-    if (!propertyId || !buyerEmail || !offerAmount || !title || !location || !agentName) {
-      return res.status(400).send({ message: "Missing required fields" });
-    }
+        // ✅ Basic validation
+        if (
+          !propertyId ||
+          !buyerEmail ||
+          !offerAmount ||
+          !title ||
+          !location ||
+          !agentName
+        ) {
+          return res.status(400).send({ message: "Missing required fields" });
+        }
 
-    const newOffer = {
-      propertyId: propertyId.toString(),
-      title,
-      location,
-      image: image || "", // fallback in case image missing
-      agentName,
-      offerAmount: parseFloat(offerAmount),
-      buyerEmail,
-      buyerName,
-      buyingDate: new Date(), // accurate buy date
-      status: "pending",
-      createdAt: new Date(),
-    };
+        const newOffer = {
+          propertyId: propertyId.toString(),
+          title,
+          location,
+          image: image || "", // fallback in case image missing
+          agentName,
+          offerAmount: parseFloat(offerAmount),
+          buyerEmail,
+          buyerName,
+          buyingDate: new Date(), // accurate buy date
+          status: "pending",
+          createdAt: new Date(),
+        };
 
-    const result = await offersCollection.insertOne(newOffer);
-    console.log("Inserted offer:", result.insertedId);
+        const result = await offersCollection.insertOne(newOffer);
+        console.log("Inserted offer:", result.insertedId);
 
-    res.send({
-      insertedId: result.insertedId,
-      message: "Offer submitted successfully",
+        res.send({
+          insertedId: result.insertedId,
+          message: "Offer submitted successfully",
+        });
+      } catch (error) {
+        console.error("Failed to submit offer:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
     });
-  } catch (error) {
-    console.error("Failed to submit offer:", error);
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
-
 
     //  Get All Offers by Logged-in User----
     app.get("/offers", async (req, res) => {
@@ -579,6 +584,77 @@ async function run() {
         .find({ buyerEmail: email })
         .toArray();
       res.send(result);
+    });
+
+    //  API for getting sold properties
+    app.get("/agent/sold-properties/:email", async (req, res) => {
+      const agentEmail = req.params.email;
+      console.log("agent email", agentEmail);
+      try {
+        const sold = await offersCollection
+          .find({ agentEmail, status: "bought" })
+          .toArray();
+        res.send(sold);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // API for getting requested properties (offers)
+    app.get("/agent/requested-offers/:email", async (req, res) => {
+      const agentEmail = req.params.email;
+      try {
+        const offers = await offersCollection.find({ agentEmail }).toArray();
+        res.send(offers);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // ✅ STEP 3: Accept an offer
+    app.patch("/agent/accept-offer/:id", async (req, res) => {
+      const id = req.params.id;
+      const offer = await offersCollection.findOne({ _id: new ObjectId(id) });
+
+      if (!offer) return res.status(404).send({ message: "Offer not found" });
+
+      const { propertyId } = offer;
+
+      // Accept the selected offer
+      await offersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "accepted" } }
+      );
+
+      // Reject other offers for the same property
+      await offersCollection.updateMany(
+        {
+          propertyId,
+          _id: { $ne: new ObjectId(id) },
+        },
+        {
+          $set: { status: "rejected" },
+        }
+      );
+
+      res.send({ message: "Offer accepted and others rejected" });
+    });
+
+    // ✅ STEP 4: Reject an offer
+    app.patch("/agent/reject-offer/:id", async (req, res) => {
+      const id = req.params.id;
+      try {
+        const result = await offersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "rejected" } }
+        );
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to reject offer" });
+      }
     });
 
     // Get Single Offer by ID (for payment page)

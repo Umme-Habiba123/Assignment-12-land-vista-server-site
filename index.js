@@ -30,6 +30,7 @@ async function run() {
     const wishlistCollection = db.collection("wishlist");
     const offersCollection = db.collection("offers");
     const paymentsCollection = db.collection("payments");
+    const propertiesCollection=db.collection('properties')
     const soldPropertiesCollection = db.collection("soldProperties");
 
     // 🔐 Token Verification Middleware (optional - if needed)
@@ -178,6 +179,7 @@ async function run() {
         res.status(500).send({ message: "Internal server error" });
       }
     });
+    
 
     // PATCH /users/role/:id
     app.patch("/users/role/:id", async (req, res) => {
@@ -292,6 +294,29 @@ async function run() {
       }
     });
 
+app.patch('/properties/advertise/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid property id" });
+    }
+    const result = await propertiesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isAdvertised: true } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    res.send({ message: "Property advertised successfully" });
+  } catch (err) {
+    console.error("Error advertising property:", err);
+    res.status(500).send({ message: "Internal Server Error", error: err.message });
+  }
+});
+
+
+
+
     // ✅ GET: Single Property by ID(my properties)
     app.get("/properties/:id", async (req, res) => {
       const id = req.params.id;
@@ -375,9 +400,11 @@ async function run() {
       }
     });
 
-    // GET sold properties for agent
+    //Get sold properties for a specific agent
     app.get("/sold-properties", async (req, res) => {
-      const agentEmail = req.query.agentEmail;
+      const agentEmail = req.query.agentEmail?.toLowerCase();
+
+      console.log("Fetching sold properties for:", agentEmail);
 
       if (!agentEmail) {
         return res
@@ -388,10 +415,7 @@ async function run() {
       try {
         const soldProperties = await paymentsCollection
           .aggregate([
-            // শুধু 'bought' status গুলো নাও
             { $match: { status: "bought" } },
-
-            // offers collection থেকে offerId দিয়ে ডাটা যোগ করো
             {
               $lookup: {
                 from: "offers",
@@ -400,23 +424,19 @@ async function run() {
                 as: "offerDetails",
               },
             },
-            { $unwind: "$offerDetails" },
+            // { $unwind: "$offerDetails" },
+            // { $match: { "offerDetails.agentEmail": agentEmail } },
 
-            // যেখানে offers এর agentEmail == query agentEmail
-            { $match: { "offerDetails.agentEmail": agentEmail.toLowerCase() } },
+            // {
+            //   $lookup: {
+            //     from: "addProperties",
+            //     localField: "offerDetails.propertyId",
+            //     foreignField: "_id",
+            //     as: "propertyDetails",
+            //   },
+            // },
+            // { $unwind: "$propertyDetails" },
 
-            // properties collection থেকে propertyId দিয়ে property info যোগ করো
-            {
-              $lookup: {
-                from: "addProperties",
-                localField: "offerDetails.propertyId",
-                foreignField: "_id",
-                as: "propertyDetails",
-              },
-            },
-            { $unwind: "$propertyDetails" },
-
-            // প্রয়োজনীয় ফিল্ড projection
             {
               $project: {
                 _id: 1,
@@ -432,29 +452,12 @@ async function run() {
           ])
           .toArray();
 
+        console.log("Found sold properties:", soldProperties);
+
         res.json(soldProperties);
       } catch (error) {
         console.error("Error fetching sold properties:", error);
         res.status(500).json({ error: "Internal Server Error" });
-      }
-    });
-
-    // POST insert sold property (call this after successful payment)
-    app.post("/sold-properties", async (req, res) => {
-      try {
-        const soldPropertyData = req.body;
-        if (!soldPropertyData.propertyTitle || !soldPropertyData.agentEmail) {
-          return res.status(400).json({ error: "Missing required fields" });
-        }
-        const result = await soldPropertiesCollection.insertOne({
-          ...soldPropertyData,
-          createdAt: new Date(),
-          status: "bought",
-        });
-        res.status(201).json({ insertedId: result.insertedId });
-      } catch (error) {
-        console.error("Error inserting sold property:", error);
-        res.status(500).json({ error: "Internal server error" });
       }
     });
 
@@ -513,6 +516,83 @@ async function run() {
       } catch (error) {
         console.error("❌ Failed to load user reviews:", error);
         res.status(500).send({ message: "Failed to load user reviews" });
+      }
+    });
+
+    //     app.get("/reviews/latest", async (req, res) => {
+    //   try {
+    //     // তোমার aggregation কোড এখানে
+    //   } catch (error) {
+    //     console.error("🔥 Error in /reviews/latest route:", error);
+    //     res.status(500).send({ error: "Failed to fetch latest reviews" });
+    //   }
+    // });
+
+    app.post("/reviews", async (req, res) => {
+      try {
+        const {
+          propertyId,
+          userEmail,
+          userName,
+          propertyTitle,
+          review,
+          reviewedAt,
+          reviewerImage,
+        } = req.body;
+
+        if (!propertyId || !userEmail || !review) {
+          return res.status(400).json({ message: "Missing required fields" });
+        }
+
+        const newReview = {
+          propertyId,
+          userEmail,
+          userName,
+          propertyTitle,
+          review,
+          reviewedAt: reviewedAt ? new Date(reviewedAt) : new Date(),
+          reviewerImage,
+        };
+
+        const result = await reviewCollection.insertOne(newReview);
+        if (result.insertedId) {
+          res.status(201).json({ message: "Review added successfully" });
+        } else {
+          res.status(500).json({ message: "Failed to add review" });
+        }
+      } catch (error) {
+        console.error("Error saving review:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    app.get("/reviews", async (req, res) => {
+      try {
+        const reviews = await reviewCollection.find().toArray();
+        res.send(reviews);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch reviews" });
+      }
+    });
+
+    app.get("/reviews/latest", async (req, res) => {
+      try {
+        const latestReviews = await reviewCollection
+          .find({})
+          .sort({ reviewedAt: -1 })
+          .limit(3)
+          .project({
+            userName: 1,
+            review: 1,
+            propertyTitle: 1,
+            reviewerImage: 1,
+          })
+          .toArray();
+
+        res.json(latestReviews);
+      } catch (error) {
+        console.error("Error fetching latest reviews:", error);
+        res.status(500).json({ message: "Internal server error" });
       }
     });
 
@@ -685,6 +765,16 @@ async function run() {
       }
     });
 
+    // POST /payments
+    app.post("/payments", async (req, res) => {
+      const paymentData = req.body;
+      paymentData.createdAt = new Date();
+      paymentData.status = "bought";
+
+      const result = await paymentsCollection.insertOne(paymentData);
+      res.send(result);
+    });
+
     //Get all offers by logged-in BUYER -----
     app.get("/offers", async (req, res) => {
       const email = req.query.email?.toLowerCase();
@@ -701,7 +791,7 @@ async function run() {
       try {
         const agentEmail = req.params.email?.toLowerCase();
         const offers = await offersCollection
-          .find({ buyerEmail: agentEmail })
+          .find({ agentEmail: agentEmail }) // এখানে buyerEmail না, agentEmail হওয়া উচিত
           .toArray();
         res.send(offers);
       } catch (error) {

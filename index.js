@@ -6,13 +6,18 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-
-// const { getAuth } = require("firebase-admin/auth");
-// const User = require("../models/User"); // MongoDB model
+const admin = require("firebase-admin");
+const jwt = require("jsonwebtoken");
 
 // Middleware------
 app.use(cors());
 app.use(express.json());
+
+const serviceAccount = require("./firebase-admin-key.json");
+const { verify } = require("jsonwebtoken");
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.jbcozto.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -30,19 +35,78 @@ async function run() {
     const wishlistCollection = db.collection("wishlist");
     const offersCollection = db.collection("offers");
     const paymentsCollection = db.collection("payments");
-    const propertiesCollection=db.collection('properties')
+    const propertiesCollection = db.collection("properties");
     const soldPropertiesCollection = db.collection("soldProperties");
 
-    // 🔐 Token Verification Middleware (optional - if needed)
-    app.use((req, res, next) => {
+    //Token Verification Middleware -----
+    const verifyFBToken = async (req, res, next) => {
+      console.log("header in middleware", req.headers);
       const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith("Bearer ")) {
-        const token = authHeader.split(" ")[1];
-        // 👉 তুমি চাইলে এখানে Firebase/Custom JWT verify করতে পারো
-        // যেমন: admin.auth().verifyIdToken(token).then(...) ...
-        req.userToken = token; // just passing along
+      if (!authHeader) {
+        console.log('authHeader', authHeader)
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      const token = authHeader.split(" ")[1];
+      if (!token) {
+       
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      // verify the toke----
+      try {
+         console.log('token',token)
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded;
+      } catch (error) {
+        console.log(error)
+        return res.status(403).send({ message: "forbidden access" });
+      }
+
+      next();
+    };
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
       }
       next();
+    };
+
+    const verifyAgent = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      if (!user || user.role !== "agent") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
+    app.post("/jwt", async (req, res) => {
+      const { email } = req.body;
+
+      try {
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(401).send({ message: "Unauthorized access" });
+        }
+
+        const token = jwt.sign(
+          { email: user.email, role: user.role },
+          process.env.ACCESS_TOKEN_SECRET,
+          { expiresIn: "7d" }
+        );
+
+        res.send({ token });
+      } catch (err) {
+        console.error("JWT error:", err);
+        res.status(500).send({ message: "Internal server error" });
+      }
     });
 
     //  Add New User (only if doesn't exist)
@@ -60,6 +124,7 @@ async function run() {
 
         const newUser = {
           ...user,
+           displayName: user.displayName || user.name || "Unnamed User",
           role: "user",
           isFirstLogin: true,
           createdAt: new Date().toISOString(),
@@ -77,8 +142,9 @@ async function run() {
       }
     });
 
-    // ✅ GET: All users (for ManageUsers)
+    //GET: All users (for ManageUsers)
     app.get("/users", async (req, res) => {
+
       try {
         const users = await usersCollection.find().toArray();
         res.send(users);
@@ -89,7 +155,7 @@ async function run() {
     });
 
     //  Get a Single User by Email
-    app.get("/users/:email", async (req, res) => {
+    app.get("/users/:email", verifyFBToken, async (req, res) => {
       const email = req.params.email;
       console.log(email);
       try {
@@ -102,29 +168,8 @@ async function run() {
         res.status(500).send({ message: "Error fetching user" });
       }
     });
-
-    // // ✅ Update User Info by Email
-    // app.patch("/users/:email", async (req, res) => {
-    //   try {
-    //     const email = req.params.email;
-    //     const updateData = req.body;
-
-    //     const result = await usersCollection.updateOne(
-    //       { email },
-    //       { $set: updateData }
-    //     );
-
-    //     res.send({
-    //       modifiedCount: result.modifiedCount,
-    //       message: "User updated",
-    //     });
-    //   } catch (error) {
-    //     res.status(500).send({ message: "Failed to update user" });
-    //   }
-    // });
-
-    // update isFoirstLogin = false
-    app.patch("/users/:email", async (req, res) => {
+    
+    app.patch("/users/:email",verifyFBToken, async (req, res) => {
       try {
         const email = req.params.email;
         const updateData = req.body;
@@ -153,7 +198,7 @@ async function run() {
       res.send(result);
     });
 
-    // GET /users/admins
+    // GET /users/admins----
     app.get("/users/admins", async (req, res) => {
       try {
         const admins = await usersCollection.find({ role: "admin" }).toArray();
@@ -164,7 +209,7 @@ async function run() {
     });
 
     // Get user role by email--------
-    app.get("/users/role/:email", async (req, res) => {
+    app.get("/users/role/:email",verifyFBToken, async (req, res) => {
       const email = req.params.email;
       try {
         const user = await usersCollection.findOne({ email });
@@ -175,11 +220,11 @@ async function run() {
 
         res.send({ role: user.role || "user" });
       } catch (error) {
-        console.error("❌ Error fetching role:", error);
+        console.error(" Error fetching role:", error);
         res.status(500).send({ message: "Internal server error" });
       }
     });
-    
+
 
     // PATCH /users/role/:id
     app.patch("/users/role/:id", async (req, res) => {
@@ -294,28 +339,83 @@ async function run() {
       }
     });
 
-app.patch('/properties/advertise/:id', async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ message: "Invalid property id" });
-    }
-    const result = await propertiesCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { isAdvertised: true } }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ message: "Property not found" });
-    }
-    res.send({ message: "Property advertised successfully" });
-  } catch (err) {
-    console.error("Error advertising property:", err);
-    res.status(500).send({ message: "Internal Server Error", error: err.message });
-  }
-});
+    app.patch("/properties/advertise/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
 
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid property id" });
+        }
 
+        const result = await addPropertyCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { isAdvertised: true } }
+        );
 
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Property not found" });
+        }
+
+        res.send({ message: "Property advertised successfully" });
+      } catch (error) {
+        console.error("Error advertising property:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // GET /properties?isAdvertised=true&verificationStatus=verified
+    app.get("/properties", async (req, res) => {
+      try {
+        const { isAdvertised, verificationStatus } = req.query;
+
+        const query = {};
+
+        if (isAdvertised !== undefined) {
+          query.isAdvertised = isAdvertised === "true";
+        }
+
+        if (verificationStatus) {
+          query.verificationStatus = verificationStatus;
+        }
+
+        const properties = await addPropertyCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(properties);
+      } catch (error) {
+        console.error("Failed to fetch properties:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    app.get("/advertised-properties", async (req, res) => {
+      try {
+        const advertisedProperties = await propertiesCollection
+          .find({ advertised: true, isVerified: true }) // Verified ও advertise করা property
+          .toArray();
+
+        res.send(advertisedProperties);
+      } catch (error) {
+        console.error("Error fetching advertised properties:", error);
+        res
+          .status(500)
+          .send({ message: "Failed to fetch advertised properties." });
+      }
+    });
+
+    app.patch("/properties/advertise/:id", async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: {
+          advertised: true,
+        },
+      };
+      const result = await propertiesCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
 
     // ✅ GET: Single Property by ID(my properties)
     app.get("/properties/:id", async (req, res) => {
@@ -331,16 +431,31 @@ app.patch('/properties/advertise/:id', async (req, res) => {
       }
     });
 
+    //   const status = req.query.status;
+    //   let query = {};
+
+    //   if (status) {
+    //     query.verificationStatus = status;
+    //   }
+
+    //   const result = await propertiesCollection.find(query).toArray();
+    //   res.send(result);
+    // });
+
+    // উদাহরণ: node.js/express backend
+
     app.get("/properties", async (req, res) => {
-      const status = req.query.status;
-      let query = {};
+      const status = req.query.status; // e.g. "verified"
+      let filter = {};
 
       if (status) {
-        query.verificationStatus = status;
+        filter.verificationStatus = status;
       }
-
-      const result = await propertiesCollection.find(query).toArray();
-      res.send(result);
+      const properties = await db
+        .collection("properties")
+        .find(filter)
+        .toArray();
+      res.send(properties);
     });
 
     //  PATCH: Update Property (my properties)
@@ -401,65 +516,70 @@ app.patch('/properties/advertise/:id', async (req, res) => {
     });
 
     //Get sold properties for a specific agent
-    app.get("/sold-properties", async (req, res) => {
-      const agentEmail = req.query.agentEmail?.toLowerCase();
+    app.get(
+      "/sold-properties",
+      verifyFBToken,
+      verifyAgent,
+      async (req, res) => {
+        const agentEmail = req.query.agentEmail;
 
-      console.log("Fetching sold properties for:", agentEmail);
+        console.log("Fetching sold properties for:", agentEmail);
 
-      if (!agentEmail) {
-        return res
-          .status(400)
-          .json({ error: "agentEmail query parameter is required" });
-      }
+        if (!agentEmail) {
+          return res
+            .status(400)
+            .json({ error: "agentEmail query parameter is required" });
+        }
 
-      try {
-        const soldProperties = await paymentsCollection
-          .aggregate([
-            { $match: { status: "bought" } },
-            {
-              $lookup: {
-                from: "offers",
-                localField: "offerId",
-                foreignField: "_id",
-                as: "offerDetails",
+        try {
+          const soldProperties = await paymentsCollection
+            .aggregate([
+              { $match: { status: "bought" } },
+              {
+                $lookup: {
+                  from: "offers",
+                  localField: "offerId",
+                  foreignField: "_id",
+                  as: "offerDetails",
+                },
               },
-            },
-            // { $unwind: "$offerDetails" },
-            // { $match: { "offerDetails.agentEmail": agentEmail } },
+              { $unwind: "$offerDetails" },
+              { $match: { "offerDetails.agentEmail": agentEmail } },
 
-            // {
-            //   $lookup: {
-            //     from: "addProperties",
-            //     localField: "offerDetails.propertyId",
-            //     foreignField: "_id",
-            //     as: "propertyDetails",
-            //   },
-            // },
-            // { $unwind: "$propertyDetails" },
-
-            {
-              $project: {
-                _id: 1,
-                propertyTitle: "$propertyDetails.title",
-                propertyLocation: "$propertyDetails.location",
-                buyerEmail: "$offerDetails.buyerEmail",
-                buyerName: "$offerDetails.buyerName",
-                soldPrice: "$amount",
-                transactionId: 1,
-                date: 1,
+              {
+                $lookup: {
+                  from: "addProperties",
+                  localField: "offerDetails.propertyId",
+                  foreignField: "_id",
+                  as: "propertyDetails",
+                },
               },
-            },
-          ])
-          .toArray();
+              { $unwind: "$propertyDetails" },
 
-        console.log("Found sold properties:", soldProperties);
+              {
+                $project: {
+                  _id: 1,
+                  propertyTitle: "$propertyDetails.title",
+                  propertyLocation: "$propertyDetails.location",
+                  buyerEmail: "$offerDetails.buyerEmail",
+                  buyerName: "$offerDetails.buyerName",
+                  soldPrice: "$amount",
+                  transactionId: 1,
+                  date: 1,
+                },
+              },
+            ])
+            .toArray();
 
-        res.json(soldProperties);
-      } catch (error) {
-        console.error("Error fetching sold properties:", error);
-        res.status(500).json({ error: "Internal Server Error" });
+          console.log("Found sold properties:", soldProperties);
+
+          res.json(soldProperties);
+        } catch (error) {
+          console.error("Error fetching sold properties:", error);
+          res.status(500).json({ error: "Internal Server Error" });
+        }
       }
-    });
+    );
 
     // PATCH: manage property- Verify property
     app.patch("/admin/verify-property/:id", async (req, res) => {
@@ -519,15 +639,6 @@ app.patch('/properties/advertise/:id', async (req, res) => {
       }
     });
 
-    //     app.get("/reviews/latest", async (req, res) => {
-    //   try {
-    //     // তোমার aggregation কোড এখানে
-    //   } catch (error) {
-    //     console.error("🔥 Error in /reviews/latest route:", error);
-    //     res.status(500).send({ error: "Failed to fetch latest reviews" });
-    //   }
-    // });
-
     app.post("/reviews", async (req, res) => {
       try {
         const {
@@ -566,7 +677,7 @@ app.patch('/properties/advertise/:id', async (req, res) => {
       }
     });
 
-    app.get("/reviews", async (req, res) => {
+    app.get("/reviews",verifyFBToken,verifyAdmin, async (req, res) => {
       try {
         const reviews = await reviewCollection.find().toArray();
         res.send(reviews);
@@ -641,23 +752,15 @@ app.patch('/properties/advertise/:id', async (req, res) => {
       res.send(result);
     });
 
-    // Get all offers by logged-in buyer
-    app.get("/offers", async (req, res) => {
-      const email = req.query.email?.toLowerCase();
-      if (!email) return res.status(400).send({ message: "Email required" });
-
-      const result = await offersCollection
-        .find({ buyerEmail: email })
-        .toArray();
-
-      res.send(result);
-    });
-
     //  Get Wishlist by User Email (GET)--------
-    app.get("/wishlist/:email", async (req, res) => {
+    app.get("/wishlist/:email", verifyFBToken, async (req, res) => {
       try {
         const email = req.params.email;
         console.log("Fetching wishlist for:", email);
+
+        if (req.decoded.email !== req.params.email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
 
         const wishlistItems = await wishlistCollection
           .find({ userEmail: email })
@@ -740,7 +843,7 @@ app.patch('/properties/advertise/:id', async (req, res) => {
         }
 
         const newOffer = {
-          propertyId: propertyId.toString(),
+          propertyId: new ObjectId(propertyId),
           title,
           location,
           image: image || "",
@@ -765,40 +868,51 @@ app.patch('/properties/advertise/:id', async (req, res) => {
       }
     });
 
-    // POST /payments
-    app.post("/payments", async (req, res) => {
-      const paymentData = req.body;
-      paymentData.createdAt = new Date();
-      paymentData.status = "bought";
-
-      const result = await paymentsCollection.insertOne(paymentData);
-      res.send(result);
-    });
-
     //Get all offers by logged-in BUYER -----
-    app.get("/offers", async (req, res) => {
+    app.get("/offers", verifyFBToken, async (req, res) => {
       const email = req.query.email?.toLowerCase();
-      if (!email) return res.status(400).send({ message: "Email required" });
 
-      const result = await offersCollection
-        .find({ buyerEmail: email })
-        .toArray();
-      res.send(result);
+      // Check if email query exists----
+      if (!email) {
+        return res.status(400).send({ message: "Email is required in query" });
+      }
+
+      // 🔐 Check if the token's email matches the requested email
+      if (req.decoded.email !== email) {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access: Email mismatch" });
+      }
+
+      try {
+        const result = await offersCollection
+          .find({ buyerEmail: email })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching offers:", error);
+        res.status(500).send({ Fmessage: "Server error" });
+      }
     });
 
     // Get offers assigned to logged-in AGENT -----------
-    app.get("/agent/requested-offers/:email", async (req, res) => {
-      try {
-        const agentEmail = req.params.email?.toLowerCase();
-        const offers = await offersCollection
-          .find({ agentEmail: agentEmail }) // এখানে buyerEmail না, agentEmail হওয়া উচিত
-          .toArray();
-        res.send(offers);
-      } catch (error) {
-        console.error("Error fetching agent offers", error);
-        res.status(500).send({ message: "Server error" });
+    app.get(
+      "/agent/requested-offers/:email",
+      verifyFBToken,
+      verifyAgent,
+      async (req, res) => {
+        try {
+          const agentEmail = req.params.email?.toLowerCase();
+          const offers = await offersCollection
+            .find({ agentEmail: agentEmail })
+            .toArray();
+          res.send(offers);
+        } catch (error) {
+          console.error("Error fetching agent offers", error);
+          res.status(500).send({ message: "Server error" });
+        }
       }
-    });
+    );
 
     // agent accept offer by id----------
     app.patch("/agent/accept-offer/:id", async (req, res) => {
@@ -891,6 +1005,8 @@ app.patch('/properties/advertise/:id', async (req, res) => {
         // Insert payment data into MongoDB
         const result = await paymentsCollection.insertOne({
           ...paymentData,
+          offerId: new ObjectId(paymentData.offerId),
+          propertyId: new ObjectId(paymentData.propertyId),
           createdAt: new Date(),
         });
 
@@ -967,8 +1083,13 @@ app.patch('/properties/advertise/:id', async (req, res) => {
     });
 
     //  Get All Reviews by User-------
-    app.get("/reviews/user", async (req, res) => {
+    app.get("/reviews/user", verifyFBToken, async (req, res) => {
       const userEmail = req.query.email;
+
+      if (req.decoded.email !== userEmail) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+
       if (!userEmail)
         return res.status(400).send({ message: "User email is required" });
 
@@ -978,7 +1099,7 @@ app.patch('/properties/advertise/:id', async (req, res) => {
             { $match: { userEmail } },
             {
               $lookup: {
-                from: "addProperties", // আপনার প্রপার্টিজ কালেকশনের নাম
+                from: "addProperties",
                 localField: "propertyId",
                 foreignField: "_id",
                 as: "propertyDetails",

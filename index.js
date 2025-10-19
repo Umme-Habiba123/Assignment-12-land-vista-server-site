@@ -1199,7 +1199,7 @@ async function run() {
 
     // Root Route
     app.get("/", (req, res) => {
-      res.send("🏡 Real Estate Server is running");
+      res.send("🏡 Real Estate Server is running")  ;
     });
 
     await db.command({ ping: 1 });

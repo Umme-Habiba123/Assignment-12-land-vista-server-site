@@ -37,6 +37,7 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const propertiesCollection = db.collection("properties");
     const soldPropertiesCollection = db.collection("soldProperties");
+    const contactsCollection = db.collection('contacts')
 
     //Token Verification Middleware -----
     const verifyFBToken = async (req, res, next) => {
@@ -49,13 +50,13 @@ async function run() {
 
       const token = authHeader.split(" ")[1];
       if (!token) {
-       
+
         return res.status(401).send({ message: "unauthorized access" });
       }
 
       // verify the toke----
       try {
-         console.log('token',token)
+        console.log('token', token)
         const decoded = await admin.auth().verifyIdToken(token);
         req.decoded = decoded;
       } catch (error) {
@@ -109,6 +110,21 @@ async function run() {
       }
     });
 
+    // sales section-----------
+    app.get("/sales", async (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit) || 3; // default 3
+        const properties = await Property.find({ status: "verified", sale: true })
+          .sort({ createdAt: -1 })
+          .limit(limit);
+
+        res.status(200).json(properties);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Server Error" });
+      }
+    });
+
     //  Add New User (only if doesn't exist)
     app.post("/users", async (req, res) => {
       console.log("Received user:", req.body);
@@ -124,7 +140,7 @@ async function run() {
 
         const newUser = {
           ...user,
-           displayName: user.displayName || user.name || "Unnamed User",
+          displayName: user.displayName || user.name || "Unnamed User",
           role: "user",
           isFirstLogin: true,
           createdAt: new Date().toISOString(),
@@ -168,8 +184,8 @@ async function run() {
         res.status(500).send({ message: "Error fetching user" });
       }
     });
-    
-    app.patch("/users/:email",verifyFBToken, async (req, res) => {
+
+    app.patch("/users/:email", verifyFBToken, async (req, res) => {
       try {
         const email = req.params.email;
         const updateData = req.body;
@@ -209,7 +225,7 @@ async function run() {
     });
 
     // Get user role by email--------
-    app.get("/users/role/:email",verifyFBToken, async (req, res) => {
+    app.get("/users/role/:email", verifyFBToken, async (req, res) => {
       const email = req.params.email;
       try {
         const user = await usersCollection.findOne({ email });
@@ -677,7 +693,7 @@ async function run() {
       }
     });
 
-    app.get("/reviews",verifyFBToken,verifyAdmin, async (req, res) => {
+    app.get("/reviews", async (req, res) => {
       try {
         const reviews = await reviewCollection.find().toArray();
         res.send(reviews);
@@ -1135,6 +1151,51 @@ async function run() {
       });
       res.send(result);
     });
+
+    // POST route for booking contact------------------
+    app.post("/contacts", async (req, res) => {
+      try {
+        const contact = {
+          phone: req.body.phone,
+          status: "pending",
+          createdAt: new Date(),
+        };
+        const result = await contactsCollection.insertOne(contact);
+        res.status(201).json(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+
+    // GET all contacts
+    app.get("/contacts", async (req, res) => {
+      try {
+        const contacts = await contactsCollection.find().sort({ createdAt: -1 }).toArray();
+        res.status(200).json(contacts);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    // PATCH contact status
+    app.patch("/contacts/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const status = req.body.status;
+        const result = await contactsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status } }
+        );
+        res.status(200).json(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
 
     // Root Route
     app.get("/", (req, res) => {

@@ -1,4 +1,3 @@
-// server/index.js
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -1196,10 +1195,33 @@ async function run() {
       }
     });
 
+    app.get("/", async (req, res) => {
+      try {
+        const { status } = req.query; // /properties?status=verified
+        const query = status ? { verificationStatus: status } : {};
+
+        const properties = await Property.find(query).sort({ createdAt: -1 });
+        res.status(200).json(properties);
+      } catch (err) {
+        res.status(500).json({ message: "Failed to fetch properties", error: err.message });
+      }
+    });
+
+    // ✅ Add new property
+    app.post("/", async (req, res) => {
+      try {
+        const newProperty = new Property(req.body);
+        await newProperty.save();
+        res.status(201).json({ message: "Property added successfully", property: newProperty });
+      } catch (err) {
+        res.status(400).json({ message: "Failed to add property", error: err.message });
+      }
+    });
+
 
     // Root Route
     app.get("/", (req, res) => {
-      res.send("🏡 Real Estate Server is running")  ;
+      res.send("🏡 Real Estate Server is running");
     });
 
     await db.command({ ping: 1 });

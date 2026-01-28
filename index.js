@@ -1152,66 +1152,102 @@ async function run() {
       res.send(result);
     });
 
-    // POST route for booking contact------------------
-    // app.post("/contacts", async (req, res) => {
-    //   try {
-    //     const contact = {
-    //       phone: req.body.phone,
-    //       status: "pending",
-    //       createdAt: new Date(),
-    //     };
-    //     const result = await contactsCollection.insertOne(contact);
-    //     res.status(201).json(result);
-    //   } catch (err) {
-    //     console.error(err);
-    //     res.status(500).json({ message: "Server error" });
-    //   }
-    // });
-
-    app.post("/contacts", verifyFBToken, async (req, res) => {
+// GET contacts for a user
+app.get("/contacts", verifyFBToken, async (req, res) => {
   try {
+    const userId = req.query.userId;
+    const contacts = await contactsCollection
+      .find({ userId })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json(contacts);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// POST new contact
+app.post("/contacts", verifyFBToken, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ message: "Phone is required" });
+
     const contact = {
-      phone: req.body.phone,
+      phone,
       status: "pending",
-      email: req.user.email, 
+      userId: req.decoded.uid || req.decoded.user_id, // Firebase UID
+      email: req.decoded.email || "",
       createdAt: new Date(),
     };
 
     const result = await contactsCollection.insertOne(contact);
-    res.status(201).json(result);
+    res.status(201).json({ ...contact, _id: result.insertedId });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-    // PATCH contact status
+// PATCH update status
 app.patch("/contacts/:id", verifyFBToken, async (req, res) => {
   try {
     const id = req.params.id;
-    const status = req.body.status;
+    const { status } = req.body;
+
     const result = await contactsCollection.updateOne(
       { _id: new ObjectId(id) },
       { $set: { status } }
     );
-    res.status(200).json(result);
+
+    if (result.modifiedCount === 0)
+      return res.status(404).json({ message: "Contact not found" });
+
+    res.json({ message: "Status updated" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-  // GET contacts of logged-in user
-app.get("/contacts", verifyFBToken, async (req, res) => {
+// POST new contact request (user)
+app.post("/contacts", verifyFBToken, async (req, res) => {
   try {
-    const userId = req.query.userId; // frontend থেকে পাঠানো userId
-    if (!userId) return res.status(400).json({ message: "User ID missing" });
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ message: "Phone is required" });
+
+    const contact = {
+      phone,
+      status: "pending",
+      userId: req.decoded.uid,
+      email: req.decoded.email,
+      createdAt: new Date(),
+    };
+
+    const result = await contactsCollection.insertOne(contact);
+    res.status(201).json({ ...contact, _id: result.insertedId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// GET all contacts (admin only)
+app.get("/admin/contacts", verifyFBToken, async (req, res) => {
+  try {
+    // শুধু admin UID চেক
+    if (!req.decoded.isAdmin) {
+      return res.status(403).json({ message: "Forbidden: Admins only" });
+    }
 
     const contacts = await contactsCollection
-      .find({ userId }) // শুধু logged-in user's contacts
+      .find()
+      .sort({ createdAt: -1 })
       .toArray();
 
-    res.status(200).json(contacts);
+    res.json(contacts);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -1219,16 +1255,16 @@ app.get("/contacts", verifyFBToken, async (req, res) => {
 });
 
 
-    // ✅ Add new property
-    app.post("/", async (req, res) => {
-      try {
-        const newProperty = new Property(req.body);
-        await newProperty.save();
-        res.status(201).json({ message: "Property added successfully", property: newProperty });
-      } catch (err) {
-        res.status(400).json({ message: "Failed to add property", error: err.message });
-      }
-    });
+
+
+
+
+
+
+
+
+
+
 
 
     // Root Route

@@ -1153,60 +1153,71 @@ async function run() {
     });
 
     // POST route for booking contact------------------
-    app.post("/contacts", async (req, res) => {
-      try {
-        const contact = {
-          phone: req.body.phone,
-          status: "pending",
-          createdAt: new Date(),
-        };
-        const result = await contactsCollection.insertOne(contact);
-        res.status(201).json(result);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Server error" });
-      }
-    });
+    // app.post("/contacts", async (req, res) => {
+    //   try {
+    //     const contact = {
+    //       phone: req.body.phone,
+    //       status: "pending",
+    //       createdAt: new Date(),
+    //     };
+    //     const result = await contactsCollection.insertOne(contact);
+    //     res.status(201).json(result);
+    //   } catch (err) {
+    //     console.error(err);
+    //     res.status(500).json({ message: "Server error" });
+    //   }
+    // });
 
+    app.post("/contacts", verifyFBToken, async (req, res) => {
+  try {
+    const contact = {
+      phone: req.body.phone,
+      status: "pending",
+      email: req.user.email, 
+      createdAt: new Date(),
+    };
 
-    // GET all contacts
-    app.get("/contacts", async (req, res) => {
-      try {
-        const contacts = await contactsCollection.find().sort({ createdAt: -1 }).toArray();
-        res.status(200).json(contacts);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Server error" });
-      }
-    });
+    const result = await contactsCollection.insertOne(contact);
+    res.status(201).json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
     // PATCH contact status
-    app.patch("/contacts/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const status = req.body.status;
-        const result = await contactsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status } }
-        );
-        res.status(200).json(result);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Server error" });
-      }
-    });
+app.patch("/contacts/:id", verifyFBToken, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const status = req.body.status;
+    const result = await contactsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status } }
+    );
+    res.status(200).json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
-    app.get("/", async (req, res) => {
-      try {
-        const { status } = req.query; // /properties?status=verified
-        const query = status ? { verificationStatus: status } : {};
+  // GET contacts of logged-in user
+app.get("/contacts", verifyFBToken, async (req, res) => {
+  try {
+    const userId = req.query.userId; // frontend থেকে পাঠানো userId
+    if (!userId) return res.status(400).json({ message: "User ID missing" });
 
-        const properties = await Property.find(query).sort({ createdAt: -1 });
-        res.status(200).json(properties);
-      } catch (err) {
-        res.status(500).json({ message: "Failed to fetch properties", error: err.message });
-      }
-    });
+    const contacts = await contactsCollection
+      .find({ userId }) // শুধু logged-in user's contacts
+      .toArray();
+
+    res.status(200).json(contacts);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 
     // ✅ Add new property
     app.post("/", async (req, res) => {

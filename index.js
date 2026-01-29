@@ -1153,19 +1153,26 @@ async function run() {
     });
 
 // GET contacts for a user
-app.get("/contacts", verifyFBToken, async (req, res) => {
-  try {
-    const userId = req.query.userId;
-    const contacts = await contactsCollection
-      .find({ userId })
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.json(contacts);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
-  }
+// app.get("/contacts", verifyFBToken, async (req, res) => {
+//   try {
+//     const userId = req.query.userId;
+//     const contacts = await contactsCollection
+//       .find({ userId })
+//       .sort({ createdAt: -1 })
+//       .toArray();
+//     res.json(contacts);
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ message: "Server error" });
+//   }
+// });
+
+app.get("/users/:email", verifyFBToken, async (req, res) => {
+  const email = req.params.email;
+  const user = await usersCollection.findOne({ email });
+  res.send(user);
 });
+
 
 
 // POST new contact

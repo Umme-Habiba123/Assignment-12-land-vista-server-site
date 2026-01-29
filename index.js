@@ -1036,7 +1036,7 @@ async function run() {
         res.status(500).json({ error: "Internal Server Error" });
       }
     });
-
+ 
     // /payments/mark-paid/:id------------
     app.patch("/payments/mark-paid/:id", async (req, res) => {
       const id = req.params.id;
@@ -1190,9 +1190,14 @@ app.post("/contacts", verifyFBToken, async (req, res) => {
   }
 });
 
-// PATCH update status
-app.patch("/contacts/:id", verifyFBToken, async (req, res) => {
+
+// PATCH contact status (admin only)
+app.patch("/admin/contacts/:id", verifyFBToken, async (req, res) => {
   try {
+    if (!req.decoded.isAdmin) {
+      return res.status(403).json({ message: "Forbidden: Admins only" });
+    }
+
     const id = req.params.id;
     const { status } = req.body;
 
@@ -1211,33 +1216,11 @@ app.patch("/contacts/:id", verifyFBToken, async (req, res) => {
   }
 });
 
-// POST new contact request (user)
-app.post("/contacts", verifyFBToken, async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ message: "Phone is required" });
 
-    const contact = {
-      phone,
-      status: "pending",
-      userId: req.decoded.uid,
-      email: req.decoded.email,
-      createdAt: new Date(),
-    };
-
-    const result = await contactsCollection.insertOne(contact);
-    res.status(201).json({ ...contact, _id: result.insertedId });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-
-// GET all contacts (admin only)
+// GET all contacts for admin
 app.get("/admin/contacts", verifyFBToken, async (req, res) => {
   try {
-    // শুধু admin UID চেক
+    // শুধু admin UID বা isAdmin flag চেক করা
     if (!req.decoded.isAdmin) {
       return res.status(403).json({ message: "Forbidden: Admins only" });
     }

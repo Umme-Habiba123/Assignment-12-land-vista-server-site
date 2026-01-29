@@ -994,7 +994,7 @@ async function run() {
       }
     });
 
-    //Delete all offers with missing agentEmail (Debug purpose only)-------
+    //Delete all offers with missing agentEmail (Debug purpose only)---  ----
     app.delete("/debug/delete-bad-offers", async (req, res) => {
       const result = await offersCollection.deleteMany({
         agentEmail: { $in: [null, ""] },
@@ -1170,24 +1170,22 @@ app.get("/contacts", verifyFBToken, async (req, res) => {
 
 // POST new contact
 app.post("/contacts", verifyFBToken, async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ message: "Phone is required" });
+  const { phone } = req.body;
 
-    const contact = {
-      phone,
-      status: "pending",
-      userId: req.decoded.uid || req.decoded.user_id, // Firebase UID
-      email: req.decoded.email || "",
-      createdAt: new Date(),
-    };
-
-    const result = await contactsCollection.insertOne(contact);
-    res.status(201).json({ ...contact, _id: result.insertedId });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
+  if (!phone || phone.trim() === "") {
+    return res.status(400).json({ message: "Phone number is required" });
   }
+
+  const contact = {
+    phone,
+    status: "pending",
+    userId: req.decoded.uid,
+    email: req.decoded.email,
+    createdAt: new Date(),
+  };
+
+  const result = await contactsCollection.insertOne(contact);
+  res.send(result);
 });
 
 
